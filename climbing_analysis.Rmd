@@ -1,0 +1,57 @@
+---
+title: "Climbing_Cleaning"
+author: "Alex Friedrichsen"
+date: "4/17/2022"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(pacman)
+pacman::p_load(readxl, tidyverse, GGally, skimr)
+```
+
+
+```{r load data}
+# SQLite code used:
+# select * from ascent
+# 
+# INNER JOIN user ON ascent.user_id = user.id
+# INNER JOIN grade ON ascent.grade_id = grade.id
+# INNER JOIN method ON ascent.method_id = method.id
+
+
+ascents <- read.csv("ten_thousand_joined.csv", sep="|")
+view(ascents)
+```
+
+```{r}
+ascents2 <- ascents %>% filter(shorthand == "flash" | shorthand == "redpoint" | shorthand == "onsight") %>% 
+                        filter(weight > 0) %>%
+                        filter(deactivated == 0) %>%
+                        filter(sex == 0 | sex == 1) %>%
+                        filter(height < 213 & height > 122) %>%
+                        mutate(bmi = round(weight/(height/100)^2, 0)) %>%
+                        filter(bmi < 40 & bmi > 12) %>%
+                        filter(bmi != 28 & (usa_routes != "5.12a" | usa_routes != "5.12b" | usa_routes != "5.12c" | usa_routes != "5.12d" 
+                                            | usa_routes != "5.13a" | usa_routes != "5.13b" | usa_routes != "5.13c" | usa_routes != "5.13d"
+                                            | usa_routes != "5.14a" | usa_routes != "5.14b" | usa_routes != "5.14b/c" | usa_routes != "5.14c"
+                                            | usa_routes != "5.14c/d" | usa_routes != "5.14d" | usa_routes != "5.14d/.15a" | usa_routes != "5.15a"
+                                            | usa_routes != "5.15a/b" | usa_routes != "5.15b" | usa_routes != "5.15b/c" | usa_routes != "5.15c"))
+
+
+head(ascents2)
+length(ascents2)
+
+
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
