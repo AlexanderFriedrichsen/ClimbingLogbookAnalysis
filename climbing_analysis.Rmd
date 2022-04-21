@@ -9,7 +9,10 @@ output: pdf_document
 knitr::opts_chunk$set(echo = TRUE)
 
 library(pacman)
-pacman::p_load(readxl, tidyverse, GGally, skimr)
+
+pacman::p_load(readxl, tidyverse, GGally, cluster, factoextra, NbClust, corrplot, gridExtra, DBI, tidyr)
+
+library(RSQLite)
 ```
 
 
@@ -21,37 +24,90 @@ pacman::p_load(readxl, tidyverse, GGally, skimr)
 # INNER JOIN grade ON ascent.grade_id = grade.id
 # INNER JOIN method ON ascent.method_id = method.id
 
+db <- dbConnect(RSQLite::SQLite(), "database.sqlite")
 
-ascents <- read.csv("ten_thousand_joined.csv", sep="|")
-view(ascents)
+ascents <- dbGetQuery(db, "select * from ascent
+                  INNER JOIN user ON ascent.user_id = user.id
+                  INNER JOIN grade ON ascent.grade_id = grade.id
+                  INNER JOIN method ON ascent.method_id = method.id"
+           )
+write.csv(ascents, "full_df.csv", row.names=FALSE)
+
+
+
+ascents <- read.csv("full_df.csv")
+ascents_sample <- read.csv("ten_thousand_joined.csv", sep="|")
+
+
 ```
 
 ```{r}
+
+ascents2 <- ascents
+
+# why won't the NA vvalues in birth go away when we try to remove them?
+# the reasons we want to do this is to avoid coercion when calcuating the years_climbed and age_at_ascent
+
+ascents2$birth <- as.Date(ascents2$birth, "%Y-%m-%d")
+yearb  = as.numeric(format(ascents2$birth,format="%Y"))
+yearb
+
+age_at_ascent = (ascents2$year - format(ascents2$birth, format("%Y")))
+
+
 ascents2 <- ascents %>% filter(shorthand == "flash" | shorthand == "redpoint" | shorthand == "onsight") %>% 
                         filter(weight > 0) %>%
                         filter(deactivated == 0) %>%
                         filter(sex == 0 | sex == 1) %>%
                         filter(height < 213 & height > 122) %>%
                         mutate(bmi = round(weight/(height/100)^2, 0)) %>%
+  
+                        mutate(birthyear = as.numeric(format(birth,format="%Y")))%>%
+                               
                         filter(bmi < 40 & bmi > 12) %>%
-                        filter(bmi != 28 & (usa_routes != "5.12a" | usa_routes != "5.12b" | usa_routes != "5.12c" | usa_routes != "5.12d" 
+                        filter(birth >= "1931-01-01") %>%
+                        filter(bmi > 28 & (usa_routes != "5.12a" | usa_routes != "5.12b" | usa_routes != "5.12c" | usa_routes != "5.12d"
                                             | usa_routes != "5.13a" | usa_routes != "5.13b" | usa_routes != "5.13c" | usa_routes != "5.13d"
                                             | usa_routes != "5.14a" | usa_routes != "5.14b" | usa_routes != "5.14b/c" | usa_routes != "5.14c"
                                             | usa_routes != "5.14c/d" | usa_routes != "5.14d" | usa_routes != "5.14d/.15a" | usa_routes != "5.15a"
                                             | usa_routes != "5.15a/b" | usa_routes != "5.15b" | usa_routes != "5.15b/c" | usa_routes != "5.15c"))
 
+ascents2 <- ascents2 %>% mutate(age_at_ascent = (year - birthyear))
+
+
+
+# here we want to make fra_routes or usa_routes as climb difficulty ratings. Do we reduce the number of categories to hopefully increase predictions?
+
+
+
 
 head(ascents2)
 length(ascents2)
-
+length(unique(ascents2$user_id))
 
 ```
 
 
 ```{r}
+# first we need to subset to retain only numeric columns
+asc <- subset(ascents2, select = c(sex, height, weight, bmi, age_at_ascent, years_climber))
+
+
+# then we standardize the data because we are using PCA
+
+
+
+# QDA/LDA on climb type
+
+# PCA -> Knn for climbing difficulty 
+
+# QDA/LDA, trees on sex
+
 ```
 
 
 ```{r}
+
+
 ```
 
