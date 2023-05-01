@@ -10,13 +10,11 @@ knitr::opts_chunk$set(echo = TRUE)
 
 library(pacman)
 
-pacman::p_load(readxl, tidyverse, GGally, cluster, factoextra, NbClust, corrplot, gridExtra, DBI, tidyr)
-
-library(RSQLite)
+pacman::p_load(readxl, tidyverse, GGally, cluster, factoextra, NbClust, corrplot, gridExtra, DBI, tidyr, RSQLite, caret, rpart, rpart.plot)
 ```
 
 
-```{r load data}
+```{r load data from database}
 # SQLite code used:
 # select * from ascent
 # 
@@ -24,90 +22,559 @@ library(RSQLite)
 # INNER JOIN grade ON ascent.grade_id = grade.id
 # INNER JOIN method ON ascent.method_id = method.id
 
-db <- dbConnect(RSQLite::SQLite(), "database.sqlite")
-
-ascents <- dbGetQuery(db, "select * from ascent
-                  INNER JOIN user ON ascent.user_id = user.id
-                  INNER JOIN grade ON ascent.grade_id = grade.id
-                  INNER JOIN method ON ascent.method_id = method.id"
-           )
-write.csv(ascents, "full_df.csv", row.names=FALSE)
-
-
-
-ascents <- read.csv("full_df.csv")
-ascents_sample <- read.csv("ten_thousand_joined.csv", sep="|")
-
-
+join_db_tables <- function() {
+    db <- dbConnect(RSQLite::SQLite(), "database.sqlite")
+    
+    ascents <- dbGetQuery(db, "select * from ascent
+                      INNER JOIN user ON ascent.user_id = user.id
+                      INNER JOIN grade ON ascent.grade_id = grade.id
+                      INNER JOIN method ON ascent.method_id = method.id"
+               )
+    write.csv(ascents, "full_df.csv", row.names=FALSE)
+}
 ```
 
-```{r}
+```{r load data}
+ascents <- read.csv("full_df.csv")
+```
 
-ascents2 <- ascents
-
-# why won't the NA vvalues in birth go away when we try to remove them?
-# the reasons we want to do this is to avoid coercion when calcuating the years_climbed and age_at_ascent
-
-ascents2$birth <- as.Date(ascents2$birth, "%Y-%m-%d")
-yearb  = as.numeric(format(ascents2$birth,format="%Y"))
-yearb
-
-age_at_ascent = (ascents2$year - format(ascents2$birth, format("%Y")))
-
-
-ascents2 <- ascents %>% filter(shorthand == "flash" | shorthand == "redpoint" | shorthand == "onsight") %>% 
-                        filter(weight > 0) %>%
-                        filter(deactivated == 0) %>%
-                        filter(sex == 0 | sex == 1) %>%
-                        filter(height < 213 & height > 122) %>%
-                        mutate(bmi = round(weight/(height/100)^2, 0)) %>%
-  
-                        mutate(birthyear = as.numeric(format(birth,format="%Y")))%>%
-                               
-                        filter(bmi < 40 & bmi > 12) %>%
-                        filter(birth >= "1931-01-01") %>%
-                        filter(bmi > 28 & (usa_routes != "5.12a" | usa_routes != "5.12b" | usa_routes != "5.12c" | usa_routes != "5.12d"
-                                            | usa_routes != "5.13a" | usa_routes != "5.13b" | usa_routes != "5.13c" | usa_routes != "5.13d"
-                                            | usa_routes != "5.14a" | usa_routes != "5.14b" | usa_routes != "5.14b/c" | usa_routes != "5.14c"
-                                            | usa_routes != "5.14c/d" | usa_routes != "5.14d" | usa_routes != "5.14d/.15a" | usa_routes != "5.15a"
-                                            | usa_routes != "5.15a/b" | usa_routes != "5.15b" | usa_routes != "5.15b/c" | usa_routes != "5.15c"))
-
-ascents2 <- ascents2 %>% mutate(age_at_ascent = (year - birthyear))
+```{r cleaning}
+# Create a copy of the df
+ascents_full <- ascents
 
 
 
-# here we want to make fra_routes or usa_routes as climb difficulty ratings. Do we reduce the number of categories to hopefully increase predictions?
+# Select the features we want to use
+ascents_eda <- ascents_full %>%
+select(id, user_id, grade_id, shorthand, usa_routes, sex, height, weight, birth, started, year, country, city, deactivated) %>%
+rename(user_country = country, user_city = city) # Rename country and city features
+
+# Remove boservations with NA values
+# ascents_eda <- na.omit(ascents_eda)
+ascents_eda <-
+ascents_eda %>%
+filter(complete.cases(.))
+
+
+
+# Turn birth int a Date format
+ascents_eda$birth <- as.Date(ascents_eda$birth, "%Y-%m-%d")
+
+
+
+# Filter the data
+ascents_eda_clean <- ascents_eda %>% filter(shorthand == "flash" | shorthand == "redpoint" | shorthand == "onsight") %>%
+filter(weight > 0) %>%
+filter(deactivated == 0) %>%
+filter(sex == 0 | sex == 1) %>%
+filter(started > 0 & started <= 2017) %>%
+filter(year > started) %>%
+filter(started > birth) %>%
+filter(year > 1900) %>%
+filter(height < 213 & height > 122) %>%
+mutate(bmi = round(weight/(height/100)^2, 0)) %>%
+mutate(birthyear = as.numeric(format(birth,format="%Y")))%>%
+filter(bmi < 40 & bmi > 12) %>%
+filter(birth >= "1931-01-01") %>%
+filter(!((bmi > 28 & usa_routes == "5.12a" ) & (bmi > 28 & usa_routes == "5.12b") & (bmi > 28 & usa_routes == "5.12c") &
+(bmi > 28 & usa_routes == "5.12d") & (bmi > 28 & usa_routes == "5.13a") & (bmi > 28 & usa_routes == "5.13b") &
+(bmi > 28 & usa_routes == "5.13c") & (bmi > 28 & usa_routes == "5.13d") & (bmi > 28 & usa_routes == "5.14a") &
+(bmi > 28 & usa_routes == "5.14b") & (bmi > 28 & usa_routes == "5.14b/c") & (bmi > 28 & usa_routes == "5.14c") &
+(bmi > 28 & usa_routes == "5.14c/d") & (bmi > 28 & usa_routes == "5.14d") & (bmi > 28 & usa_routes == "5.14d/.15a") &
+(bmi > 28 & usa_routes == "5.15a") & (bmi > 28 & usa_routes == "5.15a/b") & (bmi > 28 & usa_routes == "5.15b") &
+(bmi > 28 & usa_routes == "5.15b/c") & (bmi > 28 & usa_routes == "5.15c")))
 
 
 
 
-head(ascents2)
-length(ascents2)
-length(unique(ascents2$user_id))
+# Create and add column age_at_ascent to df
+ascents_eda_clean$age_at_ascent = (ascents_eda_clean$year - as.numeric(format(ascents_eda_clean$birth, format("%Y"))))
+
+
+
+# Create and add column years_climbed_at_ascent to df
+ascents_eda_clean$years_climbed_at_ascent = (ascents_eda_clean$year - ascents_eda_clean$started)
+
+
+
+ascents_eda_clean$sex[ascents_eda_clean$sex == 1] <- "female"
+ascents_eda_clean$sex[ascents_eda_clean$sex == 0] <- "male"
+
+
+
+# ascents_eda_clean$usa_routes <- as.factor(ascents_eda_clean$usa_routes)
+
+
+
+# Changing the character variables to factors
+ascents_eda_clean2 <- ascents_eda_clean %>%
+dplyr::mutate(sex = factor(sex,
+levels=c("female",
+"male")))
+
+
+
+# n_distinct(ascents_eda_clean$years_climbed_at_ascent)
+# summary(ascents_eda_clean$years_climbed_at_ascent)
+# n_distinct(ascents_eda_clean$age_at_ascent)
+# summary(ascents_eda_clean$age_at_ascent)
+# print(ascents_eda_clean$years_climbed_at_ascent())
+# summary(ascents_eda_clean$year)
+
+
+
+summary(ascents_eda_clean2)
 
 ```
 
 
 ```{r}
 # first we need to subset to retain only numeric columns
-asc <- subset(ascents2, select = c(sex, height, weight, bmi, age_at_ascent, years_climber))
+asc_sub <- subset(ascents_eda_clean2, select = c(shorthand, sex, height, weight, age_at_ascent, years_climbed_at_ascent, bmi))
+
+#select only rows that have full data (should be all since we filter for na.omit over full df)
+asc_sub <- asc_sub %>% 
+  filter(complete.cases(asc_sub))
+
+#keep only numeric columns
+asc <- asc_sub %>% 
+  dplyr::select(height, weight, age_at_ascent, years_climbed_at_ascent, bmi)
+
+# Getting the number of variables and sample size
+p <- ncol(asc) # Variables in columns
+n <- nrow(asc) # each skeleton in the rows
 
 
-# then we standardize the data because we are using PCA
+#all scatterplots between each pair of variables
+#ggpairs(asc) 
+
+#5 number summary for each variable
+summary(asc)
+
+#covariance matrix
+cov(asc)
+```
+
+
+```{r summary stats}
+summary(ascents_eda_clean$age_at_ascent)
+
+
+summary(asc_sub)
+
+
+ggcorr(data=asc_sub)
+```
+
+
+```{r standardizing}
+# Need to make sure to rescale the data
+asc_rescaled <- 
+  asc %>% 
+  
+  mutate(across(.cols = height:years_climbed_at_ascent,
+                .fns = ~ (. - mean(.))/sd(.),
+                .names = "{.col}_stan"),
+         
+         across(.cols = height:years_climbed_at_ascent,
+                .fns = ~ (. - min(.))/(max(.) - min(.)),
+                .names = "{.col}_norm"))
+
+# While they both look pretty similar, let's work with the standardized version:
+asc_sc <- 
+  asc_rescaled %>% 
+  dplyr::select(contains("stan"))
+  # rename(eruption = eruption_stan,
+  #        wait = wait_stan)
+```
+
+
+```{r K-means nbcluster}
+set.seed(1234)
+
+#use only first 10000 for computation power lack
+asc_10000 <- asc_sc[0:10000,]
+fviz_nbclust(x = asc_10000, 
+             FUNcluster = kmeans, 
+             method ="wss", 
+             k.max=10) + 
+  
+  labs(title ="Choosing K for Ascents Dataset Using WSS") + 
+  theme_bw()
+```
+
+
+```{r K-means }
+asc_km2 <- 
+    kmeans(asc_sc, 
+           center = 3, 
+           nstart = 20, 
+           iter.max = 10)
+
+fviz_cluster(asc_km2, 
+             geom = "point",        # Use points to represent each eruption
+             data = asc,       # The data to be plotted
+             show.clust.cent = F,   # If you want to show the centroid of each cluster
+             ellipse = T) +         # If you want an ellipse drawn around each cluster
+  
+  labs(title = "ascents Data Clustered with K-means") + 
+  
+  theme_bw() + 
+  
+  theme(legend.position = "none")
+```
+
+
+```{r QDA/LDA on climb type}
+asc <- asc_sub
+
+#manova for means
+asc_manova <- manova(cbind(height, weight, bmi, age_at_ascent, years_climbed_at_ascent) ~ shorthand,
+                       data = asc_sub)
+
+summary(asc_manova)
+```
+#Do we reject the null - is there a difference in at least one?
+We super duper reject the null with a p-value of 2.2 * 10^-16
+
+```{r QDA/LDA on climb type}
+# Using the box_m() function in the rstatix packshorthand
+rstatix::box_m(data = asc %>%
+               dplyr::select(where(is.numeric)),
+               group = asc$shorthand)
+```
+
+
+```{r LD Plot}
+## Getting the LDA object using lda()
+asc_lda <- MASS::lda(shorthand ~ ., 
+                      data = asc)
+
+
+# Creating a data frame that has the LDs and the shorthand factor
+data.frame(shorthand = asc$shorthand,
+           predict(asc_lda)$x) %>% 
+
+  # Initializing ggplot  
+  ggplot(mapping = aes(x = LD1, 
+                       y = LD2, 
+                       color = shorthand)) + 
+  
+  # geom_point() is for the scatterplot 
+  geom_point(size = 1.5, 
+             alpha = 0.75) + 
+  
+  # Where to place the legend of the shorthand colors
+  theme(legend.position = "bottom") + 
+  
+  # Add in the 95% ellipses for each group
+  stat_ellipse(linetype = "dashed", 
+               size = 1, 
+               show.legend = F)+
+  
+  # Title and labels for the axes
+  labs(title = "First two discriminant functions for shorthands",
+       
+       x = paste0("LD1 (Percent Explained: ", 
+                  round(asc_lda$svd[1]^2/sum(asc_lda$svd^2),3)*100, "%)"),
+       
+       y = paste0("LD2 (Percent Explained: ",
+                  round(asc_lda$svd[2]^2/sum(asc_lda$svd^2),3)*100, "%)"))
+```
+
+
+```{r QDA Confusion Matrix}
+#change this to QDA if we reject manova null above
+### Confusion Matrix for QDA - holdout cross-validation
+data.frame(actual = asc$shorthand,
+           predicted = MASS::qda(shorthand ~ ., 
+                                 data = asc, 
+                                 CV = T)$class) %>% 
+  table() %>%
+  confusionMatrix()
+```
+
+
+```{r climbing difficulty}
+#make climbing difficulty into a factor variable (group together observations because there are too many right now)
+
+# PCA -> Knn for climbing difficulty
+```
+
+
+```{r pca}
+
+# check that multi-collinearity is not an issue by doing PCA
+
+ascents_eda_clean_pca <- ascents_eda_clean2 %>% 
+  dplyr::select(height, weight, bmi, age_at_ascent, years_climbed_at_ascent)
+# -sex, -shorthand, -usa_routes, -user_country, -user_city, -birth, -birthyear, -year, -user_id, -grade_id
+
+# Sample size and number of variables
+n <- nrow(ascents_eda_clean_pca); p <- ncol(ascents_eda_clean_pca)
+
+# Covariance and Correlation matrices
+ascents_S <- var(ascents_eda_clean_pca); ascents_R <- cor(ascents_eda_clean_pca)
+
+
+################################################################
+###### Determining Number of PCs from Covariance Matrix #######
+################################################################
+
+#### PCA from the covariance matrix 
+ascents_S_pca <- prcomp(ascents_eda_clean_pca)
+
+# Getting the PCs
+ascents_S_PC <- data.frame(ascents_S_pca$x)
+
+# Alternatively predict() also will give you the individual PCs
+predict(ascents_S_pca) %>% 
+  
+  # Convert it to a data.frame()
+  data.frame() %>% 
+  
+  # Print the first 6 rows
+  head()
+
+# How many PCs?
+summary(ascents_S_pca)
+
+################################################# 
+####### Average standard deviation method ####### 
+################################################# 
+(avg_pc_var <- mean(ascents_S_pca$sdev^2))
+
+fviz_screeplot(X = ascents_S_pca,
+               choice = "eigenvalue",
+               geom = "line",
+               linecolor = "steelblue",
+               ncp = p) +
+  labs(title = "Screeplot using the Covariance Matrix",
+       x = "Principal Component") +
+  geom_hline(yintercept = avg_pc_var,
+             color = "darkred")
 
 
 
-# QDA/LDA on climb type
+################################################################
+###### Determining Number of PCs from Correlation Matrix #######
+################################################################
 
-# PCA -> Knn for climbing difficulty 
+#### PCA from the correlation matrix 
+ascents_R_pca <- prcomp(ascents_eda_clean_pca,
+                        scale. = T)
 
-# QDA/LDA, trees on sex
+# Getting the PCs
+ascents_R_PC <- data.frame(ascents_R_pca$x)
+
+# Alternatively predict() also will give you the individual PCs
+predict(ascents_R_pca) %>% 
+  
+  # Convert it to a data.frame()
+  data.frame() %>% 
+  
+  # Print the first 6 rows
+  head()
+
+# How many PCs?
+summary(ascents_R_pca)
+
+################################################# 
+####### Average standard deviation method ####### 
+################################################# 
+# (avg_pc_cov <- mean(ascents_R_pca$sdev^2))
+
+fviz_screeplot(X = ascents_R_pca,
+               choice = "eigenvalue",
+               geom = "line",
+               linecolor = "steelblue",
+               ncp = p) +
+  labs(title = "Screeplot using the Correlation Matrix",
+       x = "Principal Component") +
+  geom_hline(yintercept = 1,
+             color = "darkred")
 
 ```
 
+
+```{r KNN}
+
+ascents_eda_knn <- ascents_eda_clean2 %>% 
+  dplyr::select(height, weight, bmi, age_at_ascent, years_climbed_at_ascent, sex)
+
+skimr::skim(ascents_eda_knn)
+
+# Sample size, variables, and group amount
+N <- nrow(ascents_eda_knn); p <- 4; k <- n_distinct(ascents_eda_knn$sex)
+
+### Mean and 5 number summary###
+summary(ascents_eda_knn)
+
+ascents_eda_knn %>% 
+  pivot_longer(cols = height:years_climbed_at_ascent, 
+               names_to = "Var", 
+               values_to = "values") %>%
+  
+  ggplot(mapping = aes(x = values)) + 
+  geom_density(mapping = aes(fill = Var),
+               show.legend = F) + 
+  facet_wrap(facets = ~ Var, 
+             scales = "free") 
+
+
+
+
+### Looks like years_climbed_at_ascent couldbe transformed
+ascents_eda_knn2 <- 
+  ascents_eda_knn %>% 
+  mutate(across(.cols = c(years_climbed_at_ascent), 
+                .fns = log10))
+
+
+ascents_eda_knn2 %>% 
+  pivot_longer(cols = height:years_climbed_at_ascent, 
+               names_to = "Var", 
+               values_to = "values") %>%
+  
+  ggplot(mapping = aes(x = values)) + 
+  geom_density(mapping = aes(fill = Var),
+               show.legend = F) + 
+  facet_wrap(facets = ~ Var, 
+             scales = "free") 
+
+
+
+
+ascents_eda_knn2 %>% 
+  summarize(across(.cols = where(is.numeric),
+                   .fns = ~ quantile(., probs = (0:4)/4)))
+
+ascents_eda_knn2 %>% 
+  pivot_longer(cols=height:years_climbed_at_ascent, 
+               names_to = "Var", 
+               values_to = "values") %>%
+  
+  ggplot(mapping = aes(x=values)) + 
+  
+  geom_density(mapping = aes(fill=sex),
+               alpha = 0.5) + 
+  
+  facet_wrap(facets = ~ Var, 
+             scales="free") + 
+  
+  labs(x = NULL, y = NULL) +
+  theme_bw() +
+  theme(legend.position = "bottom") 
+
+
+```
 
 ```{r}
+### For Alex's plot
+# https://ggplot2.tidyverse.org/reference/geom_bar.html
+ggplot(data = ascents_eda_clean, aes(x=shorthand)) +
+  geom_bar()
+
+```
+
+
+```{r QDA climb type}
+
+```
+
+
+```{r Classification Tree climb type}
+RNGversion("4.0.0")
+set.seed(123)
+
+
+
+
+# Creating the classification tree
+ascents_tree_full <-
+rpart(shorthand ~ .,
+data = ascents_eda_clean2[1:10000,] %>% select(-sex, -usa_routes, -user_country, -user_city),
+method = "class",
+cp = -1,
+minsplit = 2,
+minbucket = 1)
+
+
+
+# Looking at the cp table to find the optimal pruning value:
+# simplest tree where xerror < min(xerror) + min(xstd)
+# With 100000, simplest tree where xerror < 0.6624474 + 0.003552484 = 0.665999884
+# With 10000, simplest tree where xerror < 0.6518252 + 0.01173771 = 0.66356291
+# With 5000, simplest tree where xerror < 0.5633423 + 0.01549896 = 0.57884126
+ascents_tree_full$cptable %>%
+data.frame() %>%
+filter(xerror < min(xerror) + min(xstd))
+```
+
+```{r Classification Tree climb type p2}
+RNGversion("4.0.0")
+set.seed(123)
+## Plotting the Pruned tree
+## For 100000 obs
+# ascents_tree_pruned <-
+# prune(ascents_tree_full,
+# cp = 0.00004)
+#
+#
+# # Plotting the pruned tree
+# rpart.plot(x = ascents_tree_pruned,
+# type = 5,
+# extra = 101)
+
+
+
+## For 10000 obs
+ascents_tree_pruned <-
+prune(ascents_tree_full,
+cp = 0.0005)
+
+
+
+
+# Plotting the pruned tree
+rpart.plot(x = ascents_tree_pruned,
+type = 5,
+extra = 101)
+
+
+
+# Displaying the confusion matrix
+ascents_tree_pred <- predict(object = ascents_tree_pruned, type = "class")
+table(predicted = ascents_tree_pred, actual = ascents_eda_clean2[1:10000,]$shorthand)
+
+# Display the confusion matrix
+data.frame(actual = ascents_eda_clean2[1:10000,]$shorthand,
+           predicted = ascents_tree_pred) %>% 
+  table() %>%
+  confusionMatrix()
+
+## For 5000 obs
+# ascents_tree_pruned <-
+# prune(ascents_tree_full,
+# cp = 0.0008)
+#
+#
+# # Plotting the pruned tree
+# rpart.plot(x = ascents_tree_pruned,
+# type = 5,
+# extra = 101)
+
 
 
 ```
 
+
+
+```{r tree shorthand confusion}
+
+```
+
+
+```{r Classification Tree sex}
+
+```
